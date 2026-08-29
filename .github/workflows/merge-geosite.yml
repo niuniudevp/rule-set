@@ -1,0 +1,76 @@
+name: Merge geosite-gfw + geosite-category-porn
+
+# 每 7 天自动运行一次, 也可手动触发。
+# cron 使用 UTC。每周日 04:00 UTC (= 北京周日 12:00), 正好每 7 天一次。
+on:
+  schedule:
+    - cron: "0 4 * * 0"
+  workflow_dispatch:
+
+# 生成后要提交回本仓库, 需要写权限
+permissions:
+  contents: write
+
+concurrency:
+  group: merge-geosite
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (niuniudevp/rule-set 仓库本身)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install sing-box
+        env:
+          SING_BOX_VERSION: "v1.13.20"
+        run: |
+          VER="$(echo "${SING_BOX_VERSION}" | sed 's/^v//')"
+          echo "Installing sing-box ${SING_BOX_VERSION} ..."
+          curl -fsSL -o sb.tar.gz \
+            "https://github.com/SagerNet/sing-box/releases/download/${SING_BOX_VERSION}/sing-box-${VER}-linux-amd64.tar.gz"
+          tar -xzf sb.tar.gz
+          sudo install -m 0755 sing-box-*/sing-box /usr/local/bin/sing-box
+          sing-box version
+
+      - name: Download upstream rule-sets
+        run: |
+          set -euo pipefail
+          BASE="https://raw.githubusercontent.com/lyc8503/sing-box-rules/rule-set-geosite"
+          curl -fsSL -o geosite-gfw.srs "${BASE}/geosite-gfw.srs"
+          curl -fsSL -o geosite-category-porn.srs "${BASE}/geosite-category-porn.srs"
+          ls -la geosite-gfw.srs geosite-category-porn.srs
+
+      - name: Merge and compile to my_cutom.srs
+        run: |
+          set -euo pipefail
+          sing-box rule-set decompile geosite-gfw.srs -o gfw.json
+          sing-box rule-set decompile geosite-category-porn.srs -o porn.json
+          sing-box rule-set merge merged.json -c gfw.json -c porn.json
+          sing-box rule-set compile -o my_cutom.srs merged.json
+          ls -la my_cutom.srs
+
+      - name: Validate output
+        run: |
+          set -euo pipefail
+          sing-box rule-set decompile my_cutom.srs -o /tmp/check.json
+          echo "--- rule count in built srs ---"
+          python3 -c "import json;print(len(json.load(open('/tmp/check.json'))['rules']),'rule(s)')"
+          test -s my_cutom.srs || { echo "my_cutom.srs is empty"; exit 1; }
+
+      - name: Commit changes (if any)
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ -n "$(git status --porcelain -- my_cutom.srs)" ]; then
+            git add my_cutom.srs
+            git commit -m "chore(rule-set): update my_cutom.srs at $(date -u +'%Y-%m-%d %H:%M UTC')"
+            git push
+            echo "Pushed updated my_cutom.srs."
+          else
+            echo "my_cutom.srs unchanged, skip commit."
+          fi
